@@ -1,0 +1,310 @@
+import json
+import os
+import re
+from threading import Lock
+
+import streamlit as st
+
+# ─────────────────────────────────────────────
+# THE POOL — World Cup 2026 office prediction pool
+# Scoring: exact score = 3 pts, correct result = 1 pt
+# ─────────────────────────────────────────────
+
+ORGANIZER_PIN = "2026"  # ← CHANGE THIS before you deploy!
+
+DATA_FILE = "pool_data.json"
+_lock = Lock()
+
+MATCHES = [
+    {"id": "m01", "d": "Thu Jun 11", "h": "Mexico", "a": "South Africa"},
+    {"id": "m02", "d": "Thu Jun 11", "h": "South Korea", "a": "Czechia"},
+    {"id": "m03", "d": "Fri Jun 12", "h": "Canada", "a": "Bosnia"},
+    {"id": "m04", "d": "Fri Jun 12", "h": "USA", "a": "Paraguay"},
+    {"id": "m05", "d": "Sat Jun 13", "h": "Qatar", "a": "Switzerland"},
+    {"id": "m06", "d": "Sat Jun 13", "h": "Brazil", "a": "Morocco"},
+    {"id": "m07", "d": "Sat Jun 13", "h": "Haiti", "a": "Scotland"},
+    {"id": "m08", "d": "Sat Jun 13", "h": "Australia", "a": "Türkiye"},
+    {"id": "m09", "d": "Sun Jun 14", "h": "Germany", "a": "Curaçao"},
+    {"id": "m10", "d": "Sun Jun 14", "h": "Netherlands", "a": "Japan"},
+    {"id": "m11", "d": "Sun Jun 14", "h": "Ivory Coast", "a": "Ecuador"},
+    {"id": "m12", "d": "Sun Jun 14", "h": "Sweden", "a": "Tunisia"},
+    {"id": "m13", "d": "Mon Jun 15", "h": "Spain", "a": "Cape Verde"},
+    {"id": "m14", "d": "Mon Jun 15", "h": "Belgium", "a": "Egypt"},
+    {"id": "m15", "d": "Mon Jun 15", "h": "Saudi Arabia", "a": "Uruguay"},
+    {"id": "m16", "d": "Mon Jun 15", "h": "Iran", "a": "New Zealand"},
+    {"id": "m17", "d": "Tue Jun 16", "h": "France", "a": "Senegal"},
+    {"id": "m18", "d": "Tue Jun 16", "h": "Argentina", "a": "Algeria"},
+    {"id": "m19", "d": "Sun Jun 21", "h": "Belgium", "a": "Iran"},
+    {"id": "m20", "d": "Fri Jun 26", "h": "Egypt", "a": "Iran"},
+]
+
+SCORE_RE = re.compile(r"^\s*(\d{1,2})\s*[-:]\s*(\d{1,2})\s*$")
+
+
+# ───────────── data layer ─────────────
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"players": {}, "results": {}, "matches": []}
+
+
+def save_data(data):
+    with _lock:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
+
+
+def all_matches(data):
+    return MATCHES + data.get("matches", [])
+
+
+def parse_score(text):
+    m = SCORE_RE.match(text or "")
+    return [int(m.group(1)), int(m.group(2))] if m else None
+
+
+def points_for(pick, res):
+    if not pick or not res:
+        return None
+    if pick == res:
+        return 3
+    out = lambda s: "H" if s[0] > s[1] else ("A" if s[0] < s[1] else "D")
+    return 1 if out(pick) == out(res) else 0
+
+
+def totals(picks, results, matches):
+    pts, exact = 0, 0
+    for m in matches:
+        p = points_for(picks.get(m["id"]), results.get(m["id"]))
+        if p == 3:
+            exact += 1
+        if p:
+            pts += p
+    return pts, exact
+
+
+# ───────────── page setup ─────────────
+st.set_page_config(page_title="The Pool — World Cup 2026", page_icon="⚽", layout="centered")
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;600;700&display=swap');
+    .stApp { background: #0A1812; }
+    html, body, [class*="st-"] { font-family: 'Archivo', sans-serif; color: #EFEDE2; }
+    h1, h2, h3 { font-family: 'Anton', sans-serif !important; letter-spacing: 1px; }
+    .pool-title { font-family: 'Anton', sans-serif; font-size: 46px; color: #EFEDE2; line-height: 1; }
+    .pool-sub { font-family: 'Anton', sans-serif; font-size: 18px; color: #E2A93B; margin-bottom: 6px; }
+    .match-date { color: #8CA394; font-size: 12px; letter-spacing: 1px; }
+    .pts-exact { background:#E2A93B; color:#10241A; padding:2px 8px; border-radius:6px; font-weight:700; font-size:12px;}
+    .pts-result { background:#3E9B63; color:#10241A; padding:2px 8px; border-radius:6px; font-weight:700; font-size:12px;}
+    .pts-zero { background:#3A2326; color:#D89499; padding:2px 8px; border-radius:6px; font-weight:700; font-size:12px;}
+    div[data-baseweb="input"] input { background:#10241A; color:#EFEDE2; }
+    .stButton button { background:#E2A93B; color:#10241A; font-weight:700; border:none; }
+    .stButton button:hover { background:#c9922f; color:#10241A; }
+    hr { border-color: #22402E; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="pool-title">THE POOL</div>', unsafe_allow_html=True)
+st.markdown('<div class="pool-sub">WORLD CUP 2026</div>', unsafe_allow_html=True)
+st.caption("Exact score = 3 pts · correct winner or draw = 1 pt · highest total takes the pot.")
+
+data = load_data()
+matches = all_matches(data)
+results = data.get("results", {})
+
+tab_picks, tab_table, tab_org, tab_how = st.tabs(
+    ["⚽ My picks", "🏆 Table", "🔐 Organizer", "💰 How it works"]
+)
+
+# ───────────── MY PICKS ─────────────
+with tab_picks:
+    name = st.text_input("Your name", key="player_name", placeholder="e.g. Shakiba").strip()
+
+    if name:
+        existing = data["players"].get(name, {}).get("picks", {})
+        st.caption(
+            f"Type each score like **2-1** (first team first). "
+            f"Leave blank to skip a match. Picks lock once the real result is in."
+        )
+
+        inputs = {}
+        for m in matches:
+            res = results.get(m["id"])
+            pick = existing.get(m["id"])
+            left, right = st.columns([3, 1])
+            with left:
+                st.markdown(
+                    f'<span class="match-date">{m["d"].upper()}</span><br>'
+                    f'**{m["h"]}** vs **{m["a"]}**',
+                    unsafe_allow_html=True,
+                )
+            with right:
+                if res:  # locked
+                    p = points_for(pick, res)
+                    badge = (
+                        '<span class="pts-exact">EXACT +3</span>' if p == 3
+                        else '<span class="pts-result">+1</span>' if p == 1
+                        else '<span class="pts-zero">0</span>' if p == 0
+                        else ""
+                    )
+                    shown = f"{pick[0]}-{pick[1]}" if pick else "no pick"
+                    st.markdown(
+                        f"🔒 you: **{shown}**<br>final: **{res[0]}-{res[1]}** {badge}",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    default = f"{pick[0]}-{pick[1]}" if pick else ""
+                    inputs[m["id"]] = st.text_input(
+                        "score", value=default, key=f"pick_{m['id']}",
+                        placeholder="2-1", label_visibility="collapsed",
+                    )
+            st.markdown("<hr>", unsafe_allow_html=True)
+
+        if st.button("💾 Save my picks", use_container_width=True):
+            fresh = load_data()  # re-read so we don't clobber others
+            picks = dict(fresh["players"].get(name, {}).get("picks", {}))
+            bad = []
+            for mid, text in inputs.items():
+                if not text.strip():
+                    continue
+                parsed = parse_score(text)
+                if parsed:
+                    picks[mid] = parsed
+                else:
+                    bad.append(text)
+            fresh["players"][name] = {"picks": picks}
+            save_data(fresh)
+            if bad:
+                st.warning(f"Saved, but I skipped these (use 2-1 format): {', '.join(bad)}")
+            else:
+                st.success(f"Saved {len(picks)} picks for {name} ✓")
+            st.rerun()
+    else:
+        st.info("Enter your name to make picks.")
+
+# ───────────── TABLE ─────────────
+with tab_table:
+    board = sorted(
+        (
+            (pname, *totals(p.get("picks", {}), results, matches))
+            for pname, p in data["players"].items()
+        ),
+        key=lambda r: (-r[1], -r[2], r[0].lower()),
+    )
+    if not board:
+        st.info("No players yet — save your picks to appear here.")
+    for i, (pname, pts, exact) in enumerate(board, start=1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        c1, c2, c3 = st.columns([6, 2, 2])
+        c1.markdown(f"{medal} **{pname}**")
+        c2.markdown(f"<span style='color:#8CA394'>{exact} exact</span>", unsafe_allow_html=True)
+        c3.markdown(
+            f"<span style='font-family:Anton;font-size:22px;color:#E2A93B'>{pts}</span>",
+            unsafe_allow_html=True,
+        )
+
+# ───────────── ORGANIZER ─────────────
+with tab_org:
+    pin = st.text_input("Organizer PIN", type="password")
+    if pin == ORGANIZER_PIN:
+        st.success("Organizer mode unlocked")
+
+        st.subheader("Enter final scores")
+        st.caption("Type the real score (e.g. 2-1) and save. This locks picks and updates the table.")
+        res_inputs = {}
+        for m in matches:
+            cur = results.get(m["id"])
+            left, right = st.columns([3, 1])
+            left.markdown(f'<span class="match-date">{m["d"].upper()}</span><br>'
+                          f'**{m["h"]}** vs **{m["a"]}**', unsafe_allow_html=True)
+            res_inputs[m["id"]] = right.text_input(
+                "final", value=f"{cur[0]}-{cur[1]}" if cur else "",
+                key=f"res_{m['id']}", placeholder="2-1", label_visibility="collapsed",
+            )
+        if st.button("💾 Save final scores", use_container_width=True):
+            fresh = load_data()
+            new_results = dict(fresh.get("results", {}))
+            for mid, text in res_inputs.items():
+                parsed = parse_score(text)
+                if parsed:
+                    new_results[mid] = parsed
+                elif not text.strip() and mid in new_results:
+                    del new_results[mid]  # cleared
+            fresh["results"] = new_results
+            save_data(fresh)
+            st.success("Results saved ✓")
+            st.rerun()
+
+        st.divider()
+        st.subheader("Add a match (knockout rounds)")
+        c1, c2 = st.columns(2)
+        t1 = c1.text_input("Team 1", placeholder="Brazil")
+        t2 = c2.text_input("Team 2", placeholder="France")
+        label = st.text_input("Round / date label", placeholder="Round of 32 · Jun 29")
+        if st.button("➕ Add match to the pool"):
+            if t1.strip() and t2.strip():
+                fresh = load_data()
+                fresh.setdefault("matches", []).append({
+                    "id": f"c{len(fresh.get('matches', [])) + 1:03d}",
+                    "d": label.strip() or "Knockout round",
+                    "h": t1.strip(), "a": t2.strip(),
+                })
+                save_data(fresh)
+                st.success(f"Added {t1.strip()} vs {t2.strip()} ✓")
+                st.rerun()
+            else:
+                st.warning("Enter both team names.")
+
+        st.divider()
+        st.subheader("Backup & restore")
+        st.caption(
+            "Streamlit's free hosting can reset the app's files when it restarts. "
+            "Download a backup after every round of results — it takes one tap."
+        )
+        st.download_button(
+            "⬇️ Download pool backup",
+            data=json.dumps(load_data()),
+            file_name="pool_backup.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        up = st.file_uploader("Restore from backup", type="json")
+        if up is not None and st.button("♻️ Restore this backup"):
+            try:
+                restored = json.load(up)
+                assert "players" in restored and "results" in restored
+                save_data(restored)
+                st.success("Pool restored ✓")
+                st.rerun()
+            except Exception:
+                st.error("That file doesn't look like a pool backup.")
+    elif pin:
+        st.error("Wrong PIN.")
+
+# ───────────── HOW IT WORKS ─────────────
+with tab_how:
+    st.subheader("How the money works")
+    st.markdown(
+        """
+1. Pick an entry fee — for example **$10 per player**.
+2. Everyone e-transfers the organizer **before kickoff on June 11**.
+3. Players open this link, enter their name, and save score predictions.
+4. The organizer enters final scores after each match, and adds knockout
+   matches as they're announced.
+5. Suggested payout: **70%** to first place, **20%** to second, **10%** stays
+   with the organizer for running it.
+
+Scoring: exact score = **3 points** · correct winner or draw = **1 point** ·
+ties broken by number of exact scores.
+
+Keep it friendly and small — this is for office pools and friend groups.
+        """
+    )
